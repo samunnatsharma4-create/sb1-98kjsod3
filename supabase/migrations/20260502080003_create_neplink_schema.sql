@@ -188,34 +188,61 @@ CREATE TABLE IF NOT EXISTS conversation_participants (
 
 ALTER TABLE conversation_participants ENABLE ROW LEVEL SECURITY;
 
+-- SECURITY DEFINER helpers: avoids infinite recursion when policies on conversation_participants
+-- read from conversation_participants (inner SELECT must not re-enter RLS via subquery).
+
+CREATE OR REPLACE FUNCTION public.is_member_of_conversation(p_conversation_id uuid)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.conversation_participants cp
+    WHERE cp.conversation_id = p_conversation_id
+      AND cp.user_id = auth.uid()
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION public.conversation_participant_count_under_cap(p_conversation_id uuid)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT (
+    SELECT count(*) FROM public.conversation_participants cp
+    WHERE cp.conversation_id = p_conversation_id
+  ) < 2;
+$$;
+
+REVOKE ALL ON FUNCTION public.is_member_of_conversation(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.is_member_of_conversation(uuid) TO authenticated;
+
+REVOKE ALL ON FUNCTION public.conversation_participant_count_under_cap(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.conversation_participant_count_under_cap(uuid) TO authenticated;
+
 CREATE POLICY "Users can view their conversation participants"
   ON conversation_participants FOR SELECT
   TO authenticated
-  USING (
-    user_id = auth.uid() OR
-    EXISTS (
-      SELECT 1 FROM conversation_participants cp2
-      WHERE cp2.conversation_id = conversation_participants.conversation_id
-      AND cp2.user_id = auth.uid()
-    )
-  );
+  USING (public.is_member_of_conversation(conversation_id));
 
 CREATE POLICY "Users can join conversations"
   ON conversation_participants FOR INSERT
   TO authenticated
-  WITH CHECK (true);
+  WITH CHECK (
+    auth.uid() = user_id
+    AND public.conversation_participant_count_under_cap(conversation_id)
+  );
 
 -- CONVERSATION POLICIES (after conversation_participants exists)
 CREATE POLICY "Conversation participants can view conversations"
   ON conversations FOR SELECT
   TO authenticated
-  USING (
-    EXISTS (
-      SELECT 1 FROM conversation_participants
-      WHERE conversation_participants.conversation_id = conversations.id
-      AND conversation_participants.user_id = auth.uid()
-    )
-  );
+  USING (public.is_member_of_conversation(id));
 
 CREATE POLICY "Authenticated users can create conversations"
   ON conversations FOR INSERT
@@ -225,13 +252,7 @@ CREATE POLICY "Authenticated users can create conversations"
 CREATE POLICY "Participants can update conversations"
   ON conversations FOR UPDATE
   TO authenticated
-  USING (
-    EXISTS (
-      SELECT 1 FROM conversation_participants
-      WHERE conversation_participants.conversation_id = conversations.id
-      AND conversation_participants.user_id = auth.uid()
-    )
-  )
+  USING (public.is_member_of_conversation(id))
   WITH CHECK (true);
 
 -- MESSAGES
@@ -250,36 +271,20 @@ ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Conversation participants can view messages"
   ON messages FOR SELECT
   TO authenticated
-  USING (
-    EXISTS (
-      SELECT 1 FROM conversation_participants
-      WHERE conversation_participants.conversation_id = messages.conversation_id
-      AND conversation_participants.user_id = auth.uid()
-    )
-  );
+  USING (public.is_member_of_conversation(conversation_id));
 
 CREATE POLICY "Participants can send messages"
   ON messages FOR INSERT
   TO authenticated
   WITH CHECK (
-    auth.uid() = sender_id AND
-    EXISTS (
-      SELECT 1 FROM conversation_participants
-      WHERE conversation_participants.conversation_id = messages.conversation_id
-      AND conversation_participants.user_id = auth.uid()
-    )
+    auth.uid() = sender_id
+    AND public.is_member_of_conversation(conversation_id)
   );
 
 CREATE POLICY "Recipients can mark messages as read"
   ON messages FOR UPDATE
   TO authenticated
-  USING (
-    EXISTS (
-      SELECT 1 FROM conversation_participants
-      WHERE conversation_participants.conversation_id = messages.conversation_id
-      AND conversation_participants.user_id = auth.uid()
-    )
-  )
+  USING (public.is_member_of_conversation(conversation_id))
   WITH CHECK (true);
 
 -- NOTIFICATIONS
@@ -327,24 +332,27 @@ ALTER TABLE typing_indicators ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Participants can view typing indicators"
   ON typing_indicators FOR SELECT
   TO authenticated
-  USING (
-    EXISTS (
-      SELECT 1 FROM conversation_participants
-      WHERE conversation_participants.conversation_id = typing_indicators.conversation_id
-      AND conversation_participants.user_id = auth.uid()
-    )
-  );
+  USING (public.is_member_of_conversation(conversation_id));
 
 CREATE POLICY "Users can insert own typing indicators"
   ON typing_indicators FOR INSERT
   TO authenticated
-  WITH CHECK (auth.uid() = user_id);
+  WITH CHECK (
+    auth.uid() = user_id
+    AND public.is_member_of_conversation(conversation_id)
+  );
 
 CREATE POLICY "Users can update own typing indicators"
   ON typing_indicators FOR UPDATE
   TO authenticated
-  USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
+  USING (
+    auth.uid() = user_id
+    AND public.is_member_of_conversation(conversation_id)
+  )
+  WITH CHECK (
+    auth.uid() = user_id
+    AND public.is_member_of_conversation(conversation_id)
+  );
 
 -- INDEXES
 CREATE INDEX IF NOT EXISTS idx_posts_user_id ON posts(user_id);

@@ -5,9 +5,16 @@ import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import FeedPage from './pages/FeedPage';
 import ProfilePage from './pages/ProfilePage';
-import { ConversationsListPage, ChatPage } from './pages/MessagesPage';
+import MessagesLayout from './pages/messages/MessagesLayout';
+import MessagesIndexPage from './pages/messages/MessagesIndexPage';
+import ChatPage from './pages/messages/ChatPage';
 import NotificationsPage from './pages/NotificationsPage';
 import SearchPage from './pages/SearchPage';
+import SettingsPage from './pages/SettingsPage';
+import GroupsPage from './pages/GroupsPage';
+import GroupDetailPage from './pages/GroupDetailPage';
+import CommunityPagesPage from './pages/CommunityPagesPage';
+import CommunityPageDetailPage from './pages/CommunityPageDetailPage';
 
 async function requireAuth() {
   const { data: { session } } = await supabase.auth.getSession();
@@ -54,15 +61,21 @@ const profileRoute = createRoute({
   component: ProfilePage,
 });
 
-const messagesRoute = createRoute({
+const messagesLayoutRoute = createRoute({
   getParentRoute: () => authLayoutRoute,
   path: '/messages',
-  component: ConversationsListPage,
+  component: MessagesLayout,
 });
 
-const chatRoute = createRoute({
-  getParentRoute: () => authLayoutRoute,
-  path: '/messages/$conversationId',
+const messagesIndexRoute = createRoute({
+  getParentRoute: () => messagesLayoutRoute,
+  path: '/',
+  component: MessagesIndexPage,
+});
+
+const messagesChatRoute = createRoute({
+  getParentRoute: () => messagesLayoutRoute,
+  path: '$conversationId',
   component: ChatPage,
 });
 
@@ -78,16 +91,50 @@ const searchRoute = createRoute({
   component: SearchPage,
 });
 
+const settingsRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/settings',
+  component: SettingsPage,
+});
+
+const groupsRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/groups',
+  component: GroupsPage,
+});
+
+const groupDetailRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/groups/$groupId',
+  component: GroupDetailPage,
+});
+
+const communityPagesRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/pages',
+  component: CommunityPagesPage,
+});
+
+const communityPageDetailRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/pages/$slug',
+  component: CommunityPageDetailPage,
+});
+
 const routeTree = rootRoute.addChildren([
   loginRoute,
   registerRoute,
   authLayoutRoute.addChildren([
     feedRoute,
     profileRoute,
-    messagesRoute,
-    chatRoute,
+    messagesLayoutRoute.addChildren([messagesIndexRoute, messagesChatRoute]),
     notificationsRoute,
     searchRoute,
+    settingsRoute,
+    groupsRoute,
+    groupDetailRoute,
+    communityPagesRoute,
+    communityPageDetailRoute,
   ]),
 ]);
 

@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
-import { Link } from '@tanstack/react-router';
-import { Search } from 'lucide-react';
+import { Link, useRouter } from '@tanstack/react-router';
+import { MessageCircle, Search } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { getOrCreateDmConversation } from '../lib/messaging';
 import Avatar from '../components/Avatar';
 import FriendButton from '../components/FriendButton';
 import Spinner from '../components/Spinner';
@@ -10,10 +12,12 @@ import type { Profile } from '../lib/database.types';
 
 export default function SearchPage() {
   const { profile } = useAuth();
+  const router = useRouter();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
+  const [messagingUserId, setMessagingUserId] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -23,17 +27,53 @@ export default function SearchPage() {
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [query]);
 
+  /** Characters that break `.or(username.ilike.x,full_name.ilike.x)` parsing */
+  const safeIlikeFrag = (s: string) => s.replace(/[%,)(\n\r]/g, '').trim().slice(0, 48);
+
   const search = async (q: string) => {
     setLoading(true);
-    const { data } = await supabase
-      .from('profiles')
-      .select('*')
-      .or(`username.ilike.%${q}%,full_name.ilike.%${q}%`)
-      .neq('id', profile?.id ?? '')
-      .limit(20);
-    setResults(data ?? []);
-    setSearched(true);
-    setLoading(false);
+    try {
+      const frag = safeIlikeFrag(q);
+      if (!frag.length) {
+        setResults([]);
+        setSearched(true);
+        setLoading(false);
+        return;
+      }
+      let qb = supabase.from('profiles').select('*').or(`username.ilike.%${frag}%,full_name.ilike.%${frag}%`);
+      if (profile?.id) qb = qb.neq('id', profile.id);
+      const { data, error } = await qb.limit(20);
+      if (error) {
+        toast.error('Search failed');
+        setResults([]);
+      } else {
+        setResults((data as Profile[]) ?? []);
+      }
+    } finally {
+      setSearched(true);
+      setLoading(false);
+    }
+  };
+
+  const openDm = async (otherUserId: string) => {
+    if (!profile) {
+      toast.error('Sign in to message.');
+      return;
+    }
+    if (messagingUserId) return;
+    setMessagingUserId(otherUserId);
+    try {
+      const result = await getOrCreateDmConversation(profile.id, otherUserId);
+      if ('error' in result) {
+        toast.error(result.error);
+        return;
+      }
+      await router.navigate({ to: '/messages/$conversationId', params: { conversationId: result.conversationId } });
+    } catch {
+      toast.error('Could not open chat.');
+    } finally {
+      setMessagingUserId(null);
+    }
   };
 
   return (
@@ -66,19 +106,38 @@ export default function SearchPage() {
 
       {!loading && results.length > 0 && (
         <div className="space-y-2">
-          {results.map((user) => (
-            <div key={user.id} className="flex items-center justify-between gap-3 p-4 bg-white rounded-2xl border border-slate-100 shadow-sm hover:border-blue-200 hover:shadow-md transition-all">
-              <Link to={`/profile/${user.username}`} className="flex items-center gap-3 flex-1 min-w-0 group">
-                <Avatar src={user.avatar_url} name={user.full_name || user.username} size="md" isOnline={user.is_online} />
+          {results.map((userRow) => (
+            <div
+              key={userRow.id}
+              className="flex items-center justify-between gap-3 p-4 bg-white dark:bg-slate-950 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm hover:border-blue-200 dark:hover:border-blue-700 hover:shadow-md transition-all"
+            >
+              <Link
+                to="/profile/$username"
+                params={{ username: userRow.username }}
+                className="flex items-center gap-3 flex-1 min-w-0 group"
+              >
+                <Avatar src={userRow.avatar_url} name={userRow.full_name || userRow.username} size="md" isOnline={userRow.is_online} />
                 <div className="min-w-0">
-                  <p className="font-semibold text-slate-900 text-sm group-hover:text-blue-600 transition-colors truncate">
-                    {user.full_name || user.username}
+                  <p className="font-semibold text-slate-900 dark:text-slate-100 text-sm group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors truncate">
+                    {userRow.full_name || userRow.username}
                   </p>
-                  <p className="text-xs text-slate-500 truncate">@{user.username}</p>
-                  {user.bio && <p className="text-xs text-slate-400 mt-0.5 truncate">{user.bio}</p>}
+                  <p className="text-xs text-slate-500 dark:text-slate-400 truncate">@{userRow.username}</p>
+                  {userRow.bio && <p className="text-xs text-slate-400 mt-0.5 truncate">{userRow.bio}</p>}
                 </div>
               </Link>
-              <FriendButton targetUserId={user.id} />
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => void openDm(userRow.id)}
+                  disabled={!!messagingUserId}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold disabled:opacity-50 transition-colors"
+                  title="Message"
+                >
+                  <MessageCircle size={14} />
+                  {messagingUserId === userRow.id ? '…' : 'Message'}
+                </button>
+                <FriendButton targetUserId={userRow.id} />
+              </div>
             </div>
           ))}
         </div>
